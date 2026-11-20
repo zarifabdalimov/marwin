@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pattern Sphere</title>
+<style>
+  :root {
+    --bg: #131315; --panel: #1c1c20; --line: #2e2e35; --text: #ececf0;
+    --muted: #8d8d99; --accent: #6d8cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+    display: grid; grid-template-columns: 300px 1fr;
+  }
+  aside {
+    background: var(--panel); border-right: 1px solid var(--line);
+    padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 22px;
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 650; }
+  h2 {
+    font-size: 11px; margin: 0 0 10px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .08em;
+  }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .row:last-child { margin-bottom: 0; }
+  .row > span { flex: none; }
+  .val { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+  input[type=color] {
+    width: 44px; height: 28px; padding: 0; border: 1px solid var(--line);
+    border-radius: 6px; background: none; cursor: pointer;
+  }
+  input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+  select, button {
+    font: inherit; color: var(--text); background: #26262c; border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 10px; cursor: pointer;
+  }
+  button:hover, select:hover { border-color: #45454f; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; width: 100%; padding: 10px; }
+  button.primary:hover { filter: brightness(1.1); }
+  button.wide { width: 100%; }
+  label.check { display: flex; align-items: center; gap: 8px; cursor: pointer; margin-bottom: 10px; }
+  label.check input { accent-color: var(--accent); }
+  #drop {
+    border: 1px dashed #4a4a55; border-radius: 9px; padding: 14px; text-align: center;
+    color: var(--muted); cursor: pointer; transition: .15s;
+  }
+  #drop:hover, body.dragging #drop { border-color: var(--accent); color: var(--text); background: rgba(109,140,255,.08); }
+  #patterns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
+  #patterns button {
+    padding: 0; aspect-ratio: 1; border-radius: 7px; overflow: hidden;
+    background: #fff center/cover no-repeat; border: 2px solid transparent;
+  }
+  #patterns button.active { border-color: var(--accent); }
+  main { display: grid; place-items: center; padding: 24px; min-width: 0; min-height: 0; position: relative; }
+  #stage {
+    width: min(100%, calc(100vh - 80px)); aspect-ratio: 1; border-radius: 14px;
+    background: repeating-conic-gradient(#222226 0% 25%, #1a1a1d 0% 50%) 0 0 / 24px 24px;
+  }
+  canvas { width: 100%; height: 100%; display: block; }
+  .hint { position: absolute; bottom: 10px; left: 0; right: 0; text-align: center; color: var(--muted); font-size: 12px; }
+  #err { color: #ff8080; font-size: 12px; white-space: pre-wrap; }
+  @media (max-width: 760px) {
+    body { grid-template-columns: 1fr; grid-template-rows: auto auto; }
+    aside { border-right: 0; border-top: 1px solid var(--line); order: 2; }
+    #stage { width: min(100%, 70vh); }
+  }
+</style>
+</head>
+<body>
+<aside>
+  <h1>Pattern Sphere</h1>
+
+  <section>
+    <h2>Pattern</h2>
+    <div id="drop">Upload pattern (SVG, PNG, JPG)<br><small>or drop files anywhere</small></div>
+    <input id="file" type="file" accept=".svg,image/*" multiple hidden>
+    <div id="patterns"></div>
+    <div id="err"></div>
+  </section>
+
+  <section>
+    <h2>Colors</h2>
+    <div class="row"><span>Pattern</span><input id="patColor" type="color" value="#231f20"></div>
+    <div class="row"><span>Sphere</span><input id="baseColor" type="color" value="#f4f1ea"></div>
+    <button id="swap" class="wide">Swap colors</button>
+  </section>
+
+  <section>
+    <h2>Mapping</h2>
+    <div class="row"><span>Projection</span>
+      <select id="mode"><option value="0">Spherical wrap</option><option value="1">Flat (front/back)</option></select>
+    </div>
+    <div class="row"><span>Repeat X</span><input id="repX" type="range" min="1" max="8" step="1" value="1"><span class="val" id="repXv">1</span></div>
+    <div class="row"><span>Repeat Y</span><input id="repY" type="range" min="1" max="8" step="1" value="1"><span class="val" id="repYv">1</span></div>
+    <label class="check"><input id="sharp" type="checkbox" checked> Crisp pattern edges</label>
+    <label class="check"><input id="invert" type="checkbox"> Invert pattern</label>
+  </section>
+
+  <section>
+    <h2>Rotation</h2>
+    <div class="row"><span>Spin</span><input id="spin" type="range" min="-180" max="180" step="1" value="30"><span class="val" id="spinv">30°</span></div>
+    <div class="row"><span>Tilt</span><input id="tilt" type="range" min="-180" max="180" step="1" value="15"><span class="val" id="tiltv">15°</span></div>
+    <div class="row"><span>Roll</span><input id="roll" type="range" min="-180" max="180" step="1" value="0"><span class="val" id="rollv">0°</span></div>
+    <button id="reset" class="wide">Reset rotation</button>
+  </section>
+
+  <section>
+    <h2>Look</h2>
+    <div class="row"><span>Shading</span><input id="shade" type="range" min="0" max="1" step="0.01" value="0"><span class="val" id="shadev">0</span></div>
+  </section>
+
+  <section>
+    <h2>Export</h2>
+    <div class="row"><span>Size</span>
+      <select id="size"><option>1024</option><option selected>2048</option><option>4096</option></select>
+    </div>
+    <button id="export" class="primary">Export PNG (transparent)</button>
+  </section>
+</aside>
+
+<main>
+  <div id="stage"><canvas id="c"></canvas></div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const canvas = $('c');
+const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: true, antialias: false });
+if (!gl) { $('err').textContent = 'WebGL2 is not available in this browser.'; throw new Error('no webgl2'); }
+
+const VS = `#version 300 es
+in vec2 aPos;
+void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+const FS = `#version 300 es
+precision highp float;
+uniform vec2 uRes;
+uniform mat3 uRot;
+uniform sampler2D uTex;
+uniform vec2 uTexSize;
+uniform vec3 uBase;
+uniform vec3 uPat;
+uniform vec2 uRepeat;
+uniform float uUseAlpha;
+uniform float uInvert;
+uniform float uShade;
+uniform float uSharp;
+uniform int uMode;
+out vec4 outColor;
+const float PI = 3.141592653589793;
+
+vec2 mapUV(vec3 q){
+  if (uMode == 0)
+    return vec2(atan(q.x, q.z) / (2.0 * PI) + 0.5, 0.5 - asin(clamp(q.y, -1.0, 1.0)) / PI);
+  return vec2(q.x, -q.y) * 0.5 + 0.5;
+}
+
+vec3 normalAt(vec2 c, float R){
+  vec2 p = c / max(R, length(c));
+  return vec3(p, sqrt(max(0.0, 1.0 - dot(p, p))));
+}
+
+const int N = 4; // N x N samples per pixel
+
+void main(){
+  vec2 c = gl_FragCoord.xy - 0.5 * uRes;
+  float R = 0.5 * min(uRes.x, uRes.y) - 1.0;
+  float alpha = clamp(R - length(c) + 0.5, 0.0, 1.0);
+
+  // Texture gradients for the pixel. Longitude wraps around, so its derivative is wrong
+  // along the seam: take it from two parameterisations (seams on opposite sides) and
+  // keep the smaller one per axis.
+  vec3 n = normalAt(c, R);
+  vec2 uv0 = mapUV(uRot * n);
+  vec2 gx = dFdx(uv0), gy = dFdy(uv0);
+  if (uMode == 0) {
+    float uB = fract(uv0.x + 0.5) - 0.5;
+    float bx = dFdx(uB), by = dFdy(uB);
+    if (abs(bx) < abs(gx.x)) gx.x = bx;
+    if (abs(by) < abs(gy.x)) gy.x = by;
+  }
+  gx *= uRepeat; gy *= uRepeat;
+
+  // texels covered by one pixel; below ~2 the texture is magnified and edges get re-sharpened
+  float fp = max(length(gx * uTexSize), length(gy * uTexSize));
+  float soft = mix(1.0, clamp(fp * 0.5, 0.02, 1.0), uSharp);
+  gx /= float(N); gy /= float(N);
+
+  float m = 0.0;
+  for (int j = 0; j < N; j++) for (int i = 0; i < N; i++) {
+    vec2 o = (vec2(float(i), float(j)) + 0.5) / float(N) - 0.5;
+    vec2 uv = mapUV(uRot * normalAt(c + o, R)) * uRepeat;
+    vec4 t = textureGrad(uTex, uv, gx, gy);
+    float luma = dot(t.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float s = mix(1.0 - luma, t.a, uUseAlpha);
+    m += clamp((s - 0.5) / soft + 0.5, 0.0, 1.0);
+  }
+  m /= float(N * N);
+
+  m = mix(m, 1.0 - m, uInvert);
+  vec3 col = mix(uBase, uPat, m);
+
+  float diff = max(dot(n, normalize(vec3(-0.45, 0.55, 0.7))), 0.0);
+  col *= mix(1.0, 0.4 + 0.7 * diff, uShade);
+
+  outColor = vec4(col * alpha, alpha);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s);
+    $('err').textContent = log; throw new Error(log);
+  }
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'aPos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+for (const n of ['uRes','uRot','uTex','uTexSize','uBase','uPat','uRepeat','uUseAlpha','uInvert','uShade','uSharp','uMode'])
+  U[n] = gl.getUniformLocation(prog, n);
+
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+const aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+if (aniso) gl.texParameterf(gl.TEXTURE_2D, aniso.TEXTURE_MAX_ANISOTROPY_EXT,
+  Math.min(16, gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+
+const MAX_TEX = Math.min(4096, gl.getParameter(gl.MAX_TEXTURE_SIZE));
+
+/* ---------- state ---------- */
+let rot = [1,0,0, 0,1,0, 0,0,1];        // row-major, object -> view (set from sliders)
+const patterns = [];                    // { name, canvas, useAlpha, thumb }
+let current = null;
+let queued = false;
+
+/* ---------- matrix helpers (row-major 3x3) ---------- */
+function mul(a, b) {
+  const o = new Array(9);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++)
+    o[r*3+c] = a[r*3]*b[c] + a[r*3+1]*b[3+c] + a[r*3+2]*b[6+c];
+  return o;
+}
+function rotX(a){ const c=Math.cos(a), s=Math.sin(a); return [1,0,0, 0,c,-s, 0,s,c]; }
+function rotY(a){ const c=Math.cos(a), s=Math.sin(a); return [c,0,s, 0,1,0, -s,0,c]; }
+function rotZ(a){ const c=Math.cos(a), s=Math.sin(a); return [c,-s,0, s,c,0, 0,0,1]; }
+function orthonormalize(m) {
+  let x = [m[0],m[3],m[6]], y = [m[1],m[4],m[7]];
+  const norm = v => { const l = Math.hypot(...v); return v.map(e => e/l); };
+  x = norm(x);
+  const d = x[0]*y[0]+x[1]*y[1]+x[2]*y[2];
+  y = norm(y.map((e,i) => e - d*x[i]));
+  const z = [x[1]*y[2]-x[2]*y[1], x[2]*y[0]-x[0]*y[2], x[0]*y[1]-x[1]*y[0]];
+  return [x[0],y[0],z[0], x[1],y[1],z[1], x[2],y[2],z[2]];
+}
+
+/* ---------- rendering ---------- */
+function hexRGB(h) { return [1,3,5].map(i => parseInt(h.slice(i, i+2), 16) / 255); }
+
+function render() {
+  queued = false;
+  const rad = id => +$(id).value * Math.PI / 180;
+  rot = mul(rotZ(-rad('roll')), mul(rotX(rad('tilt')), rotY(rad('spin'))));
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (!current) return;
+  gl.uniform2f(U.uRes, canvas.width, canvas.height);
+  // row-major data read as column-major = transpose = view -> object
+  gl.uniformMatrix3fv(U.uRot, false, new Float32Array(rot));
+  gl.uniform1i(U.uTex, 0);
+  gl.uniform2f(U.uTexSize, current.canvas.width, current.canvas.height);
+  gl.uniform3fv(U.uBase, hexRGB($('baseColor').value));
+  gl.uniform3fv(U.uPat, hexRGB($('patColor').value));
+  gl.uniform2f(U.uRepeat, +$('repX').value, +$('repY').value);
+  gl.uniform1f(U.uUseAlpha, current.useAlpha ? 1 : 0);
+  gl.uniform1f(U.uInvert, $('invert').checked ? 1 : 0);
+  gl.uniform1f(U.uShade, +$('shade').value);
+  gl.uniform1f(U.uSharp, $('sharp').checked ? 1 : 0);
+  gl.uniform1i(U.uMode, +$('mode').value);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+function requestRender() { if (!queued) { queued = true; requestAnimationFrame(render); } }
+
+new ResizeObserver(() => {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const s = Math.max(2, Math.round(canvas.clientWidth * dpr));
+  if (canvas.width !== s) { canvas.width = canvas.height = s; }
+  render();
+}).observe(canvas);
+
+/* ---------- patterns ---------- */
+function loadImage(url) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = () => rej(new Error('Could not load image'));
+    img.src = url;
+  });
+}
+
+function hasTransparency(src) {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 128;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.drawImage(src, 0, 0, 128, 128);
+  const d = x.getImageData(0, 0, 128, 128).data;
+  for (let i = 3; i < d.length; i += 4) if (d[i] < 245) return true;
+  return false;
+}
+
+function makeThumb(src) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 96;
+  const x = c.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0, 0, 96, 96);
+  const s = Math.max(96 / src.width, 96 / src.height) * 2; // zoomed-in crop so detail is visible
+  x.drawImage(src, 0, 0, src.width * s, src.height * s);
+  return c.toDataURL();
+}
+
+function addPattern(name, cnv) {
+  const p = { name, canvas: cnv, useAlpha: hasTransparency(cnv), thumb: makeThumb(cnv) };
+  patterns.push(p);
+  selectPattern(p);
+}
+
+function selectPattern(p) {
+  current = p;
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, p.canvas);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  drawPatternList();
+  requestRender();
+}
+
+function drawPatternList() {
+  const box = $('patterns');
+  box.innerHTML = '';
+  for (const p of patterns) {
+    const b = document.createElement('button');
+    b.title = p.name;
+    b.style.backgroundImage = `url(${p.thumb})`;
+    if (p === current) b.className = 'active';
+    b.onclick = () => selectPattern(p);
+    box.appendChild(b);
+  }
+}
+
+async function loadFile(file) {
+  const isSvg = /svg/i.test(file.type) || /\.svg$/i.test(file.name);
+  let url, w, h;
+  if (isSvg) {
+    // give the SVG explicit pixel dimensions so every browser can rasterise it
+    const doc = new DOMParser().parseFromString(await file.text(), 'image/svg+xml');
+    const svg = doc.documentElement;
+    if (svg.nodeName.toLowerCase() !== 'svg') throw new Error('Not a valid SVG');
+    const vb = (svg.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+    w = parseFloat(svg.getAttribute('width')) || vb[2] || 1024;
+    h = parseFloat(svg.getAttribute('height')) || vb[3] || 1024;
+    if (vb.length !== 4) svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    const k = MAX_TEX / Math.max(w, h);
+    w = Math.round(w * k); h = Math.round(h * k);
+    svg.setAttribute('width', w); svg.setAttribute('height', h);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(doc)], { type: 'image/svg+xml' }));
+  } else {
+    url = URL.createObjectURL(file);
+  }
+  try {
+    const img = await loadImage(url);
+    if (!isSvg) {
+      const k = Math.min(1, MAX_TEX / Math.max(img.naturalWidth, img.naturalHeight));
+      w = Math.round(img.naturalWidth * k); h = Math.round(img.naturalHeight * k);
+    }
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    addPattern(file.name, c);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function loadFiles(files) {
+  $('err').textContent = '';
+  for (const f of files) {
+    try { await loadFile(f); }
+    catch (e) { $('err').textContent += `${f.name}: ${e.message}\n`; }
+  }
+}
+
+// built-in test patterns, drawn at 2048x1024 so they tile seamlessly around the sphere
+(function builtInPatterns() {
+  const W = 2048, H = 1024, INK = '#231f20';
+  const make = (name, draw) => {
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const x = c.getContext('2d');
+    x.fillStyle = INK; x.strokeStyle = INK;
+    draw(x);
+    addPattern(name, c);
+  };
+
+  // offset checker, 34 columns x 19 rows (like "marwin pattern 1")
+  (function () {
+    const c = document.createElement('canvas');
+    c.width = 2040; c.height = 1140;
+    const x = c.getContext('2d');
+    x.fillStyle = INK;
+    for (let r = 0; r < 19; r++) for (let q = 0; q < 34; q++)
+      if ((r + q) % 2 === 0) x.fillRect(q * 60, r * 60, 60, 60);
+    addPattern('Checker', c);
+  })();
+
+  make('Vertical stripes', x => {
+    for (let i = 0; i < 32; i += 2) x.fillRect(i * 64, 0, 64, H);
+  });
+
+  make('Rings', x => {
+    for (let i = 0; i < 16; i += 2) x.fillRect(0, i * 64, W, 64);
+  });
+
+  make('Diagonal stripes', x => {
+    x.lineWidth = 45;
+    for (let i = -H; i < W + H; i += 128) {
+      x.beginPath(); x.moveTo(i, -20); x.lineTo(i + H + 40, H + 20); x.stroke();
+    }
+  });
+
+  make('Dots', x => {
+    for (let r = 0; r < 16; r++) for (let q = 0; q < 32; q++) {
+      if ((r + q) % 2) continue;
+      x.beginPath(); x.arc(q * 64 + 32, r * 64 + 32, 26, 0, Math.PI * 2); x.fill();
+    }
+  });
+
+  make('Grid', x => {
+    for (let i = 0; i < 32; i++) x.fillRect(i * 64 - 6, 0, 12, H);
+    x.fillRect(W - 6, 0, 6, H);
+    for (let i = 1; i < 16; i++) x.fillRect(0, i * 64 - 6, W, 12);
+  });
+
+  make('Triangles', x => {
+    for (let r = 0; r < 16; r++) for (let q = -1; q < 32; q++) {
+      const ox = q * 64 + (r % 2 ? 32 : 0), oy = r * 64;
+      x.beginPath(); x.moveTo(ox, oy + 64); x.lineTo(ox + 32, oy); x.lineTo(ox + 64, oy + 64); x.fill();
+    }
+  });
+
+  make('Waves', x => {
+    for (let r = 0; r < 8; r++) {
+      const y0 = r * 128 + 32;
+      x.beginPath();
+      for (let px = 0; px <= W; px += 4) x.lineTo(px, y0 + Math.sin(px / 256 * Math.PI * 2) * 28);
+      for (let px = W; px >= 0; px -= 4) x.lineTo(px, y0 + 64 + Math.sin(px / 256 * Math.PI * 2) * 28);
+      x.fill();
+    }
+  });
+
+  make('Zigzag', x => {
+    x.lineWidth = 34; x.lineJoin = 'miter';
+    for (let r = 0; r < 8; r++) {
+      const y0 = r * 128 + 32;
+      x.beginPath();
+      for (let i = -1; i <= 33; i++) x.lineTo(i * 64, y0 + (i % 2 ? 64 : 0));
+      x.stroke();
+    }
+  });
+
+  // band between two curves top(px) and bottom(px)
+  const band = (x, top, bottom) => {
+    x.beginPath();
+    for (let px = 0; px <= W; px += 2) x.lineTo(px, top(px));
+    for (let px = W; px >= 0; px -= 2) x.lineTo(px, bottom(px));
+    x.fill();
+  };
+  const TAU = Math.PI * 2;
+
+  // crests lean to one side and the band swells and thins along its length
+  make('Leaning waves', x => {
+    const lean = t => Math.sin(t + 0.9 * Math.sin(t));
+    for (let r = 0; r < 8; r++) {
+      const y0 = r * 128 + 40;
+      band(x,
+        px => y0 + 30 * lean(px / 256 * TAU),
+        px => y0 + 44 + 34 * lean(px / 256 * TAU - 0.7));
+    }
+  });
+
+  // every band has its own shape: mixed frequencies with per-row phases, uneven thickness
+  make('Irregular waves', x => {
+    let seed = 7;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let r = 0; r < 8; r++) {
+      const y0 = r * 128 + 34;
+      const p = [rnd() * TAU, rnd() * TAU, rnd() * TAU, rnd() * TAU];
+      const top = px => {
+        const t = px / W * TAU;
+        return y0 + 16 * Math.sin(3 * t + p[0]) + 10 * Math.sin(5 * t + p[1]) + 6 * Math.sin(8 * t + p[2]);
+      };
+      band(x, top, px => top(px) + 45 + 15 * Math.sin(2 * px / W * TAU + p[3]));
+    }
+  });
+
+  // one long swell per band, steep on one side, with rows drifting out of step
+  make('Swell', x => {
+    for (let r = 0; r < 6; r++) {
+      const y0 = r * 170 + 50, shift = r * 1.1;
+      const f = t => Math.sin(t + 1.1 * Math.sin(t) + shift);
+      band(x,
+        px => y0 + 42 * f(px / 512 * TAU),
+        px => y0 + 70 + 20 * f(px / 512 * TAU + 1.2));
+    }
+  });
+
+  selectPattern(patterns[0]);
+})();
+
+/* ---------- interaction ---------- */
+for (const id of ['patColor','baseColor','mode','repX','repY','sharp','invert','shade','spin','tilt','roll'])
+  $(id).addEventListener('input', () => {
+    for (const r of ['spin','tilt','roll']) $(r + 'v').textContent = $(r).value + '°';
+    $('repXv').textContent = $('repX').value;
+    $('repYv').textContent = $('repY').value;
+    $('shadev').textContent = (+$('shade').value).toFixed(2).replace(/\.?0+$/, '') || '0';
+    requestRender();
+  });
+
+$('swap').onclick = () => {
+  const a = $('patColor').value;
+  $('patColor').value = $('baseColor').value; $('baseColor').value = a;
+  requestRender();
+};
+$('reset').onclick = () => {
+  $('spin').value = 30; $('tilt').value = 15; $('roll').value = 0;
+  $('spin').dispatchEvent(new Event('input'));
+};
+
+$('drop').onclick = () => $('file').click();
+$('file').onchange = e => { loadFiles([...e.target.files]); e.target.value = ''; };
+let dragDepth = 0;
+addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; document.body.classList.add('dragging'); });
+addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); } });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => {
+  e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging');
+  loadFiles([...e.dataTransfer.files]);
+});
+
+/* ---------- export ---------- */
+$('export').onclick = () => {
+  const size = Math.min(+$('size').value, gl.getParameter(gl.MAX_RENDERBUFFER_SIZE));
+  const prev = canvas.width;
+  canvas.width = canvas.height = size;
+  render();
+  const out = document.createElement('canvas');
+  out.width = out.height = size;
+  out.getContext('2d').drawImage(canvas, 0, 0); // copy before the GL buffer is cleared
+  canvas.width = canvas.height = prev;
+  render();
+  out.toBlob(blob => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `sphere-${size}.png`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }, 'image/png');
+};
+</script>
+</body>
+</html>
