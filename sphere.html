@@ -10,6 +10,7 @@
     --muted: #8d8d99; --accent: #6d8cff;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { height: 100%; margin: 0; }
   body {
     background: var(--bg); color: var(--text);
@@ -82,11 +83,11 @@
     <div id="err"></div>
   </section>
 
-  <section>
+  <section id="colors">
     <h2>Colors</h2>
-    <div class="row"><span>Pattern</span><input id="patColor" type="color" value="#231f20"></div>
-    <div class="row"><span>Sphere</span><input id="baseColor" type="color" value="#f4f1ea"></div>
-    <button id="swap" class="wide">Swap colors</button>
+    <div class="row mask-only"><span>Pattern</span><input id="patColor" type="color" value="#231f20"></div>
+    <div class="row" id="baseRow"><span>Sphere</span><input id="baseColor" type="color" value="#f4f1ea"></div>
+    <button id="swap" class="wide mask-only">Swap colors</button>
   </section>
 
   <section>
@@ -96,8 +97,8 @@
     </div>
     <div class="row"><span>Repeat X</span><input id="repX" type="range" min="1" max="8" step="1" value="1"><span class="val" id="repXv">1</span></div>
     <div class="row"><span>Repeat Y</span><input id="repY" type="range" min="1" max="8" step="1" value="1"><span class="val" id="repYv">1</span></div>
-    <label class="check"><input id="sharp" type="checkbox" checked> Crisp pattern edges</label>
-    <label class="check"><input id="invert" type="checkbox"> Invert pattern</label>
+    <label class="check mask-only"><input id="sharp" type="checkbox" checked> Crisp pattern edges</label>
+    <label class="check mask-only"><input id="invert" type="checkbox"> Invert pattern</label>
   </section>
 
   <section>
@@ -146,6 +147,7 @@ uniform vec3 uBase;
 uniform vec3 uPat;
 uniform vec2 uRepeat;
 uniform float uUseAlpha;
+uniform float uPhoto;
 uniform float uInvert;
 uniform float uShade;
 uniform float uSharp;
@@ -191,6 +193,7 @@ void main(){
   gx /= float(N); gy /= float(N);
 
   float m = 0.0;
+  vec4 photo = vec4(0.0); // premultiplied
   for (int j = 0; j < N; j++) for (int i = 0; i < N; i++) {
     vec2 o = (vec2(float(i), float(j)) + 0.5) / float(N) - 0.5;
     vec2 uv = mapUV(uRot * normalAt(c + o, R)) * uRepeat;
@@ -198,11 +201,15 @@ void main(){
     float luma = dot(t.rgb, vec3(0.2126, 0.7152, 0.0722));
     float s = mix(1.0 - luma, t.a, uUseAlpha);
     m += clamp((s - 0.5) / soft + 0.5, 0.0, 1.0);
+    photo += t;
   }
   m /= float(N * N);
+  photo /= float(N * N);
 
   m = mix(m, 1.0 - m, uInvert);
   vec3 col = mix(uBase, uPat, m);
+  // photos keep their own colours; the sphere colour only shows through transparent areas
+  if (uPhoto > 0.5) col = photo.rgb + uBase * (1.0 - photo.a);
 
   float diff = max(dot(n, normalize(vec3(-0.45, 0.55, 0.7))), 0.0);
   col *= mix(1.0, 0.4 + 0.7 * diff, uShade);
@@ -234,7 +241,7 @@ gl.enableVertexAttribArray(aPos);
 gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
 const U = {};
-for (const n of ['uRes','uRot','uTex','uTexSize','uBase','uPat','uRepeat','uUseAlpha','uInvert','uShade','uSharp','uMode'])
+for (const n of ['uRes','uRot','uTex','uTexSize','uBase','uPat','uRepeat','uUseAlpha','uPhoto','uInvert','uShade','uSharp','uMode'])
   U[n] = gl.getUniformLocation(prog, n);
 
 const tex = gl.createTexture();
@@ -247,6 +254,7 @@ const aniso = gl.getExtension('EXT_texture_filter_anisotropic');
 if (aniso) gl.texParameterf(gl.TEXTURE_2D, aniso.TEXTURE_MAX_ANISOTROPY_EXT,
   Math.min(16, gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
 
+gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true); // so photo colours filter correctly
 const MAX_TEX = Math.min(4096, gl.getParameter(gl.MAX_TEXTURE_SIZE));
 
 /* ---------- state ---------- */
@@ -295,6 +303,7 @@ function render() {
   gl.uniform3fv(U.uPat, hexRGB($('patColor').value));
   gl.uniform2f(U.uRepeat, +$('repX').value, +$('repY').value);
   gl.uniform1f(U.uUseAlpha, current.useAlpha ? 1 : 0);
+  gl.uniform1f(U.uPhoto, current.photo ? 1 : 0);
   gl.uniform1f(U.uInvert, $('invert').checked ? 1 : 0);
   gl.uniform1f(U.uShade, +$('shade').value);
   gl.uniform1f(U.uSharp, $('sharp').checked ? 1 : 0);
@@ -340,8 +349,10 @@ function makeThumb(src) {
   return c.toDataURL();
 }
 
-function addPattern(name, cnv) {
-  const p = { name, canvas: cnv, useAlpha: hasTransparency(cnv), thumb: makeThumb(cnv) };
+// photo = true: a raster upload shown in its own colours. Otherwise (SVGs, built-ins)
+// the image is a mask that gets recoloured with the pattern colour.
+function addPattern(name, cnv, photo = false) {
+  const p = { name, canvas: cnv, photo, useAlpha: hasTransparency(cnv), thumb: makeThumb(cnv) };
   patterns.push(p);
   selectPattern(p);
 }
@@ -351,6 +362,10 @@ function selectPattern(p) {
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, p.canvas);
   gl.generateMipmap(gl.TEXTURE_2D);
+  // recolouring controls only apply to mask patterns
+  for (const el of document.querySelectorAll('.mask-only')) el.hidden = p.photo;
+  $('baseRow').hidden = p.photo && !p.useAlpha;
+  $('colors').hidden = p.photo && !p.useAlpha;
   drawPatternList();
   requestRender();
 }
@@ -397,7 +412,7 @@ async function loadFile(file) {
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
     c.getContext('2d').drawImage(img, 0, 0, w, h);
-    addPattern(file.name, c);
+    addPattern(file.name, c, !isSvg);
   } finally {
     URL.revokeObjectURL(url);
   }
