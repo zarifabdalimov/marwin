@@ -63,6 +63,7 @@
   }
   canvas { width: 100%; height: 100%; display: block; }
   .hint { position: absolute; bottom: 10px; left: 0; right: 0; text-align: center; color: var(--muted); font-size: 12px; }
+  .status { color: var(--muted); font-size: 12px; margin-top: 8px; min-height: 17px; }
   #err { color: #ff8080; font-size: 12px; white-space: pre-wrap; }
   @media (max-width: 760px) {
     body { grid-template-columns: 1fr; grid-template-rows: auto auto; }
@@ -115,7 +116,40 @@
   </section>
 
   <section>
-    <h2>Export</h2>
+    <h2>Animation</h2>
+    <div class="row"><span>Horizontal</span>
+      <select id="dirH"><option value="0">None</option><option value="1" selected>→ Right</option><option value="-1">← Left</option></select>
+    </div>
+    <div class="row"><span>Vertical</span>
+      <select id="dirV"><option value="0" selected>None</option><option value="1">↑ Up</option><option value="-1">↓ Down</option></select>
+    </div>
+    <div class="row"><span>Twist</span>
+      <select id="dirT"><option value="0" selected>None</option><option value="-1">↻ Clockwise</option><option value="1">↺ Counter-clockwise</option></select>
+    </div>
+    <div class="row"><span>Duration</span><input id="dur" type="range" min="1" max="12" step="0.5" value="4"><span class="val" id="durv">4s</span></div>
+    <div class="row"><span>Frame rate</span>
+      <select id="delay">
+        <option value="100">10 fps</option>
+        <option value="50">20 fps</option>
+        <option value="40" selected>25 fps</option>
+        <option value="30">33 fps</option>
+        <option value="20">50 fps</option>
+      </select>
+    </div>
+    <div class="row"><span>GIF size</span>
+      <select id="gifSize"><option>256</option><option>384</option><option selected>512</option><option>768</option><option>1024</option></select>
+    </div>
+    <label class="check"><input id="gifTransparent" type="checkbox" checked> Transparent background</label>
+    <div class="row" id="gifBgRow" hidden><span>Background</span><input id="gifBg" type="color" value="#ffffff"></div>
+    <div class="row">
+      <button id="play" class="wide">▶ Play preview</button>
+    </div>
+    <button id="exportGif" class="primary">Export GIF</button>
+    <div id="gifStatus" class="status"></div>
+  </section>
+
+  <section>
+    <h2>Still image</h2>
     <div class="row"><span>Size</span>
       <select id="size"><option>1024</option><option selected>2048</option><option>4096</option></select>
     </div>
@@ -262,6 +296,7 @@ let rot = [1,0,0, 0,1,0, 0,0,1];        // row-major, object -> view (set from s
 const patterns = [];                    // { name, canvas, useAlpha, thumb }
 let current = null;
 let queued = false;
+let animPhase = 0;                      // 0..1, progress through one full animated turn
 
 /* ---------- matrix helpers (row-major 3x3) ---------- */
 function mul(a, b) {
@@ -272,6 +307,12 @@ function mul(a, b) {
 }
 function rotX(a){ const c=Math.cos(a), s=Math.sin(a); return [1,0,0, 0,c,-s, 0,s,c]; }
 function rotY(a){ const c=Math.cos(a), s=Math.sin(a); return [c,0,s, 0,1,0, -s,0,c]; }
+function rotAxis([x, y, z], a) {         // right-handed rotation about a unit axis
+  const c = Math.cos(a), s = Math.sin(a), t = 1 - c;
+  return [t*x*x + c,   t*x*y - s*z, t*x*z + s*y,
+          t*x*y + s*z, t*y*y + c,   t*y*z - s*x,
+          t*x*z - s*y, t*y*z + s*x, t*z*z + c];
+}
 function rotZ(a){ const c=Math.cos(a), s=Math.sin(a); return [c,-s,0, s,c,0, 0,0,1]; }
 function orthonormalize(m) {
   let x = [m[0],m[3],m[6]], y = [m[1],m[4],m[7]];
@@ -290,6 +331,8 @@ function render() {
   queued = false;
   const rad = id => +$(id).value * Math.PI / 180;
   rot = mul(rotZ(-rad('roll')), mul(rotX(rad('tilt')), rotY(rad('spin'))));
+  const axis = animAxis();
+  if (animPhase && axis) rot = mul(rotAxis(axis, animPhase * Math.PI * 2), rot);
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
@@ -583,6 +626,132 @@ addEventListener('drop', e => {
   e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging');
   loadFiles([...e.dataTransfer.files]);
 });
+
+/* ---------- animation ---------- */
+const GIFENC_URL = 'https://unpkg.com/gifenc@1.0.3/dist/gifenc.esm.js';
+let playing = false, playStart = 0, gifBusy = false;
+
+// The chosen directions are combined into one axis (in view space) that the sphere makes a
+// full turn around, so any combination still loops seamlessly. Returns null if none is chosen.
+function animAxis() {
+  const h = +$('dirH').value, v = +$('dirV').value, t = +$('dirT').value;
+  const axis = [-v, h, t];            // front of the sphere moves by (h, v); t > 0 twists counter-clockwise
+  const len = Math.hypot(...axis);
+  return len ? axis.map(e => e / len) : null;
+}
+const animDelay = () => +$('delay').value;                                   // ms per frame
+const animFrames = () => Math.max(2, Math.round(+$('dur').value * 1000 / animDelay()));
+
+// The preview steps at the same frame rate as the GIF, so it shows what the export will look like.
+function tick(now) {
+  if (!playing) return;
+  const frames = animFrames();
+  const t = ((now - playStart) / (+$('dur').value * 1000)) % 1;
+  const phase = Math.floor(t * frames) / frames;
+  if (phase !== animPhase) { animPhase = phase; render(); }
+  requestAnimationFrame(tick);
+}
+function setPlaying(on) {
+  playing = on;
+  $('play').textContent = on ? '■ Stop preview' : '▶ Play preview';
+  if (on) { playStart = performance.now(); requestAnimationFrame(tick); }
+  else { animPhase = 0; requestRender(); }
+}
+$('play').onclick = () => {
+  if (gifBusy) return;
+  if (!playing && !animAxis()) { $('gifStatus').textContent = 'Pick at least one direction.'; return; }
+  $('gifStatus').textContent = '';
+  setPlaying(!playing);
+};
+
+for (const id of ['dirH', 'dirV', 'dirT', 'dur', 'gifTransparent'])
+  $(id).addEventListener('input', () => {
+    $('durv').textContent = $('dur').value + 's';
+    $('gifBgRow').hidden = $('gifTransparent').checked;
+    requestRender();
+  });
+
+async function buildGif(onProgress = () => {}) {
+  const { GIFEncoder, quantize, applyPalette } = await import(GIFENC_URL);
+  const size = +$('gifSize').value, frames = animFrames(), delay = animDelay();
+  const transparent = $('gifTransparent').checked;
+  const prevSize = canvas.width, prevPhase = animPhase;
+  const tmp = document.createElement('canvas');
+  tmp.width = tmp.height = size;
+  const ctx = tmp.getContext('2d', { willReadFrequently: true });
+
+  const grab = i => {
+    animPhase = i / frames;
+    render();
+    if (transparent) ctx.clearRect(0, 0, size, size);
+    else { ctx.fillStyle = $('gifBg').value; ctx.fillRect(0, 0, size, size); }
+    ctx.drawImage(canvas, 0, 0);
+    return ctx.getImageData(0, 0, size, size).data;
+  };
+
+  try {
+    canvas.width = canvas.height = size;
+
+    // One palette for the whole animation (no colour flicker between frames),
+    // built from pixels sampled across a handful of frames.
+    const nSample = Math.min(frames, 6);
+    const step = Math.max(1, Math.floor(size * size * nSample / 300000));
+    const pool = [];
+    for (let k = 0; k < nSample; k++) {
+      const d = grab(Math.floor(k * frames / nSample));
+      for (let i = 0; i < d.length; i += 4 * step)
+        if (d[i + 3] >= 128) pool.push(d[i], d[i + 1], d[i + 2], 255);
+    }
+    const palette = quantize(new Uint8Array(pool), transparent ? 255 : 256, { format: 'rgb565' });
+    const transparentIndex = palette.length;
+    if (transparent) palette.push([0, 0, 0]);
+
+    const gif = GIFEncoder();
+    for (let f = 0; f < frames; f++) {
+      const d = grab(f);
+      const index = applyPalette(d, palette, 'rgb565');
+      // GIF transparency is on/off only: pixels less than half covered are dropped
+      if (transparent) for (let i = 0; i < index.length; i++) if (d[i * 4 + 3] < 128) index[i] = transparentIndex;
+      gif.writeFrame(index, size, size, {
+        palette: f === 0 ? palette : undefined,
+        delay,
+        transparent,
+        transparentIndex,
+        dispose: transparent ? 2 : -1,
+      });
+      onProgress(f + 1, frames);
+      await new Promise(r => setTimeout(r));
+    }
+    gif.finish();
+    return gif.bytes();
+  } finally {
+    canvas.width = canvas.height = prevSize;
+    animPhase = prevPhase;
+    render();
+  }
+}
+
+$('exportGif').onclick = async () => {
+  if (gifBusy) return;
+  if (!animAxis()) { $('gifStatus').textContent = 'Pick at least one direction.'; return; }
+  gifBusy = true;
+  setPlaying(false);
+  const status = $('gifStatus');
+  status.textContent = 'Preparing…';
+  try {
+    const bytes = await buildGif((f, n) => { status.textContent = `Rendering frame ${f} of ${n}…`; });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([bytes], { type: 'image/gif' }));
+    a.download = 'sphere.gif';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    status.textContent = `Saved sphere.gif (${(bytes.length / 1048576).toFixed(1)} MB)`;
+  } catch (e) {
+    status.textContent = 'GIF export failed: ' + e.message;
+  } finally {
+    gifBusy = false;
+  }
+};
 
 /* ---------- export ---------- */
 $('export').onclick = () => {
